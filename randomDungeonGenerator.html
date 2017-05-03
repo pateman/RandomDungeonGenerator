@@ -1,0 +1,665 @@
+<html>
+	<head>
+		<style type="text/css">
+			body {
+				margin:0
+			}
+		</style>
+	</head>
+	<body>
+		<canvas id='canvas'></canvas>
+		<script type="text/javascript">
+			function calc(x1, y1, x2, y2) {
+				return Math.acos((x1 * x2 + y1 * y2) / ( Math.sqrt(x1*x1 + y1*y1) * Math.sqrt(x2*x2 + y2*y2) ));
+			}
+			function normalize(x, y) {
+			var len = Math.sqrt(x * x + y * y)
+
+			if (len == 0) {
+				return {x: x, y: y}
+			}
+			return {x: x / len, y: y / len}
+
+			}
+			// Converts from radians to degrees.
+			Math.degrees = function(radians) {
+			  return radians * 180 / Math.PI;
+			};
+
+			function angleBetweenLines(line1, line2) {
+				var angle1 = Math.atan2(line1.y1 - line1.y2,
+										   line1.x1 - line1.x2);
+				var angle2 = Math.atan2(line2.y1 - line2.y2,
+										   line2.x1 - line2.x2);
+			   return angle1 - angle2;
+			}
+			
+			
+			function Point(x, y) {
+				this.x = x;
+				this.y = y;
+			}
+			
+			function Room(x, y, w, h) {
+				this.x1 = x;
+				this.x2 = x + w;
+				this.y1 = y;
+				this.y2 = y + h;
+				this.w = w;
+				this.h = h;
+				this.index = 0;
+				
+				this.center = new Point(Math.floor((this.x1 + this.x2) / 2), Math.floor((this.y1 + this.y2) / 2));
+			}
+			Room.prototype.intersects = function(room) {
+				return (this.x1 <= room.x2 && this.x2 >= room.x1 && this.y1 <= room.y2 && this.y2 >= room.y1);
+			}
+			
+			function Corridor(x, y, len, isVertical, roomA, roomB) {
+				this.x = x;
+				this.y = y;
+				this.isVertical = isVertical;
+								
+				if (isVertical) {
+					this.width = 1;
+					this.height = len;
+				} else {
+					this.width = len;
+					this.height = 1;
+				}
+				
+				this.roomA = roomA;
+				this.roomB = roomB;
+				this.corners = [];
+				this.cells = [];
+			}
+			Corridor.prototype.addCell = function(x, y) {
+				this.cells.push({cellX: x, cellY: y});
+			}
+			Corridor.prototype.intersectionPoint = function(corridor) {
+				var tx1 = this.x;
+				var ty1 = this.y;
+				var rx1 = corridor.x;
+				var ry1 = corridor.y;
+				var tx2 = tx1; tx2 += this.width;
+				var ty2 = ty1; ty2 += this.height;
+				var rx2 = rx1; rx2 += corridor.width;
+				var ry2 = ry1; ry2 += corridor.height;
+				if (tx1 < rx1) tx1 = rx1;
+				if (ty1 < ry1) ty1 = ry1;
+				if (tx2 > rx2) tx2 = rx2;
+				if (ty2 > ry2) ty2 = ry2;
+				tx2 -= tx1;
+				ty2 -= ty1;
+				
+				return {ax: tx1, ay: ty1, bx: tx2, by: ty2};
+			}
+			Corridor.prototype.addCorner = function(cellX, cellY, direction) {
+				this.corners.push({x: cellX, y: cellY, dir: direction});
+			}
+			Corridor.prototype.checkCorners = function() {
+				var divTwo = Math.floor(this.cells.length / 2);
+				for (var c = 0; c < divTwo; c++) {
+					var cellA = this.cells[c];
+					var cellB = this.cells[c + 1];
+					var wallsA = Dungeon.getWallDirections(cellA.cellX, cellA.cellY);
+					var wallsB = Dungeon.getWallDirections(cellB.cellX, cellB.cellY);
+					
+					if (wallsA != wallsB) {
+						console.log("Corner", cellA, cellB);
+					}
+					//var cell = this.cells[c];
+					
+					//if (Dungeon.map[cell.cellX][cell.cellY] != Dungeon.TILE_CORRIDOR) {
+					//	continue;
+					//}
+					
+					
+					//var myWalls = Dungeon.getWallDirections(cell.cellX, cell.cellY);
+					//var array = Dungeon.neighborCells(cell.cellX, cell.cellY);
+					//for (var i = 0; i < array.length; i++) {
+					//	if (array[i] == Dungeon.TILE_CORRIDOR) {
+					//		var neighbor = Dungeon.getNeighborCellCoords(cell.cellX, cell.cellY, i);
+					//		var walls = Dungeon.getWallDirections(neighbor[0], neighbor[1]);
+					//		if (walls != myWalls) {
+					//			console.log(Helpers.DirToString(i), neighbor, [cell.cellX, cell.cellY]);
+					//		}
+					//	}
+					//}
+				}
+			}
+		
+			var Dungeon = {
+				map: null,
+				rooms: null,
+				orient: null,
+				corridors: [],
+				
+				TILE_NONE: 0,
+				TILE_ROOM: 1,
+				TILE_CORRIDOR: 2,
+				TILE_DOOR: 3,
+				TILE_START: 4,
+				TILE_END: 5,
+				
+				ORIENTATION_NONE: 0,
+				ORIENTATION_HORIZONTAL: 1,
+				ORIENTATION_VERTICAL: 2,
+				
+				NORTH: 0,
+				SOUTH: 1,
+				WEST: 2,
+				EAST: 3,
+				
+				WALL_NORTH: 1,
+				WALL_SOUTH: 2,
+				WALL_EAST: 4,
+				WALL_WEST: 8,
+				
+				MAP_WIDTH: 50,
+				MAP_HEIGHT: 50,
+				TILE_WIDTH: 10,
+				TILE_HEIGHT: 10,
+				
+				maxRooms: 100,
+				minRoomSize: 5,
+				maxRoomSize: 15,
+				
+				corridorsForRooms: function(room1, room2) {
+					var min = Math.min(room1, room2) * 2;
+					return [min, min+1];
+				},
+				
+				makeMap: function() {
+					this.map = new Array(this.MAP_WIDTH);
+					this.orient = new Array(this.MAP_WIDTH);
+					
+					for (var x = 0; x < this.MAP_WIDTH; x++) {
+						this.map[x] = new Array(this.MAP_HEIGHT);
+						this.orient[x] = new Array(this.MAP_HEIGHT);
+						for (var y = 0; y < this.MAP_HEIGHT; y++) {
+							this.map[x][y] = this.TILE_NONE;
+							this.orient[x][y] = this.ORIENTATION_NONE;
+						}
+					}
+					
+					this.placeRooms();
+					this.placeDoors();
+					this.createCorridorsCells();
+					this.setStartEnd();
+				},
+				
+				placeRooms: function() {
+					this.rooms = [];
+					
+					var newCenter = null;
+					var roomIndex = 0;
+					for (var rooms = 0; rooms < this.maxRooms; rooms++) {
+						var w = Helpers.GetRandom(this.minRoomSize, this.maxRoomSize);
+						var h = Helpers.GetRandom(this.minRoomSize, this.maxRoomSize);
+						var x = Helpers.GetRandom(1, this.MAP_WIDTH - w - 1);
+						var y = Helpers.GetRandom(1, this.MAP_HEIGHT - h - 1);
+						
+						var newRoom = new Room(x, y, w, h);
+						
+						var failed = false;
+						for (var i = 0; i < this.rooms.length; i++) {
+							var otherRoom = this.rooms[i];
+							if (newRoom.intersects(otherRoom)) {
+								failed = true;
+								break;
+							}
+						}
+						
+						if (!failed) {							
+							newCenter = newRoom.center;
+							
+							newRoom.index = roomIndex++;
+							if (this.rooms.length) {
+								var prevRoom = this.rooms[this.rooms.length -1];
+								var prevCenter = prevRoom.center;
+								if (Helpers.GetRandom(0, 2) == 1) {
+									this.hCorridor(prevCenter.x, newCenter.x, prevCenter.y, newRoom, prevRoom);
+									this.vCorridor(prevCenter.y, newCenter.y, newCenter.x, newRoom, prevRoom);	
+								} else {
+									this.vCorridor(prevCenter.y, newCenter.y, prevCenter.x, newRoom, prevRoom);
+									this.hCorridor(prevCenter.x, newCenter.x, newCenter.y, newRoom, prevRoom);
+								}
+							}
+							
+							this.rooms.push(newRoom);
+						}
+					}
+					
+					for (var i = 0; i < this.rooms.length; i++) {
+						this.createRoom(this.rooms[i]);
+					}
+				},
+				
+				createRoom: function(room) {
+					for (var x = room.x1; x < room.x2; x++) {
+						for (var y = room.y1; y < room.y2; y++) {
+							this.map[x][y] = this.TILE_ROOM;
+						}
+					}
+				},
+				
+				hCorridor: function(x1, x2, y, a, b) {
+					var low = Math.min(x1, x2);
+					var high = Math.max(x1, x2) + 1;
+					
+					var corridor = new Corridor(low, y, high, false, a, b);
+					this.corridors.push(corridor);
+					
+					for (var x = low; x < high; x++) {
+						this.map[x][y] = this.TILE_CORRIDOR;
+						this.orient[x][y] = this.ORIENTATION_HORIZONTAL;
+					}
+				},
+				
+				vCorridor: function(y1, y2, x, a, b) {
+					var low = Math.min(y1, y2);
+					var high = Math.max(y1, y2) + 1;
+					
+					var corridor = new Corridor(x, low, high, true, a, b);
+					this.corridors.push(corridor);
+					
+					for (var y = low; y < high; y++) {
+						this.map[x][y] = this.TILE_CORRIDOR;
+						this.orient[x][y] = this.ORIENTATION_VERTICAL;
+					}
+				},
+				
+				createCorridorsCells: function() {
+					for (var i = 0; i < this.corridors.length; i++){
+						var corridor = this.corridors[i];
+						if (corridor.isVertical) {
+							for (var y = corridor.y; y < corridor.height; y++) {
+								if (this.map[corridor.x][y] == Dungeon.TILE_CORRIDOR) {
+									corridor.addCell(corridor.x, y);
+								}
+							}
+						} else {
+							for (var x = corridor.x; x < corridor.width; x++){
+								if (this.map[x][corridor.y] == Dungeon.TILE_CORRIDOR) {
+									corridor.addCell(x, corridor.y);
+								}
+							}
+						}
+					}
+				},
+				
+				neighborCells: function(cellX, cellY) {
+					var northTile = Math.max(0, cellY - 1);
+					var southTile = Math.min(this.MAP_HEIGHT, cellY + 1);
+					var eastTile = Math.min(this.MAP_WIDTH, cellX + 1);
+					var westTile = Math.max(0, cellX - 1);
+					
+					return [this.map[cellX][northTile], this.map[cellX][southTile], this.map[westTile][cellY], this.map[eastTile][cellY]]
+				},
+				
+				getNeighborCellCoords: function(cellX, cellY, dir) {
+					var northTile = Math.max(0, cellY - 1);
+					var southTile = Math.min(this.MAP_HEIGHT, cellY + 1);
+					var eastTile = Math.min(this.MAP_WIDTH, cellX + 1);
+					var westTile = Math.max(0, cellX - 1);
+					
+					switch (dir) {
+						case Dungeon.NORTH:
+							return [cellX, northTile];
+						case Dungeon.SOUTH:
+							return [cellX, southTile];
+						case Dungeon.EAST:
+							return [eastTile, cellY];
+						case Dungeon.WEST:
+							return [westTile, cellY];
+					}
+				},
+				
+				surroudingCells: function(room, side) {
+					var result;
+					
+					switch (side) {
+						case Dungeon.NORTH:
+							result = [];
+							for (var i = 0; i < room.w; i++) {
+								result.push(this.map[room.x1 + i][Math.max(0, room.y1 - 1)]);
+							}
+							break;
+						case Dungeon.SOUTH:
+							result = [];
+							for (var i = 0; i < room.w; i++) {
+								result.push(this.map[room.x1 + i][Math.min(this.MAP_HEIGHT, room.y2)]);
+							}
+							break;
+						case Dungeon.EAST:
+							result = [];
+							for (var i = 0; i < room.h; i++) {
+								result.push(this.map[Math.min(this.MAP_WIDTH, room.x2)][room.y1 + i]);
+							}
+							break;
+						case Dungeon.WEST:
+							result = [];
+							for (var i = 0; i < room.h; i++) {
+								result.push(this.map[Math.max(0, room.x1 - 1)][room.y1 + i]);
+							}
+							break;
+						default:
+							result = null;
+					}
+					
+					return result;
+				},
+				
+				placeDoors: function() {
+					for (var x = 0; x < this.MAP_WIDTH; x++) {
+						for (var y = 0; y < this.MAP_HEIGHT; y++) {
+							var tile = this.map[x][y];
+							if (tile == this.TILE_CORRIDOR) {
+								var northTile = Math.max(0, y - 1);
+								var southTile = Math.min(this.MAP_HEIGHT, y + 1);
+								var eastTile = Math.min(this.MAP_WIDTH, x + 1);
+								var westTile = Math.max(0, x - 1);
+								
+								if (
+									((this.map[eastTile][y] == this.TILE_CORRIDOR) && (this.map[westTile][y] == this.TILE_CORRIDOR)) ||
+									((this.map[x][northTile] == this.TILE_CORRIDOR) && (this.map[x][southTile] == this.TILE_CORRIDOR))
+								) {
+									continue;
+								}
+								
+								if (this.map[x][northTile] == this.TILE_ROOM) {
+									this.map[x][northTile] = this.TILE_DOOR;
+								}
+								if (this.map[x][southTile] == this.TILE_ROOM) {
+									this.map[x][southTile] = this.TILE_DOOR;
+								}
+								if (this.map[eastTile][y] == this.TILE_ROOM) {
+									this.map[eastTile][y] = this.TILE_DOOR;
+								}
+								if (this.map[westTile][y] == this.TILE_ROOM) {
+									this.map[westTile][y] = this.TILE_DOOR;
+								}
+							}
+						}
+					}
+					
+					//	Now, for each room, we need to check if all cells along each of its sides are corridors.
+					var sides = [Dungeon.NORTH, Dungeon.SOUTH, Dungeon.EAST, Dungeon.WEST];
+					for (var i = 0; i < this.rooms.length; i++) {
+						var room = this.rooms[i];
+						for (var s = 0; s < sides.length; s++) {
+							var tiles = this.surroudingCells(room, sides[s]);
+							
+							var allCorridors = true;
+							for (var t = 0; t < tiles.length; t++) {
+								if (tiles[t] != Dungeon.TILE_CORRIDOR) {
+									allCorridors = false;
+									break;
+								}
+							}
+							
+							if (allCorridors) {
+								//	Just pick any cell along the currently iterated side and turn it into a door.
+								switch (sides[s]) {
+									case Dungeon.NORTH:
+										this.map[room.x1][room.y1] = this.TILE_DOOR;
+										break;
+									case Dungeon.SOUTH:
+										this.map[room.x1][room.y2 -1] = this.TILE_DOOR;
+										break;
+									case Dungeon.EAST:
+										this.map[room.x2 -1][room.y1] = this.TILE_DOOR;
+										break;
+									case Dungeon.WEST:
+										this.map[room.x1][room.y2 -1] = this.TILE_DOOR;
+										break;
+								}
+							}
+						}
+					}
+				},
+				
+				setStartEnd: function() {
+					var dist = [];
+					var A, B;
+					for (var a = 0; a < this.rooms.length; a++) {
+						A = this.rooms[a];
+						for (var b = 0; b < this.rooms.length; b++) {
+							B = this.rooms[b];
+							if (A == B) {
+								continue;
+							}
+							
+							var distance = Math.abs(B.center.x - A.center.x) + Math.abs(B.center.y - A.center.y);
+							dist.push({roomA: A, roomB: B, d: distance});
+						}
+					}
+					
+					dist.sort(function(a, b) { return (a.d == b.d ? 0 : a.d < b.d? 1 : -1) });
+					var mostDistant = dist[0];
+					this.map[mostDistant.roomA.center.x][mostDistant.roomA.center.y] = this.TILE_START;
+					this.map[mostDistant.roomB.center.x][mostDistant.roomB.center.y] = this.TILE_END;
+				},
+				
+				serialize: function() {
+					return JSON.stringify(this);
+				},
+				
+				deserialize: function(input) {
+					var parsed = JSON.parse(input);
+					this.map = parsed.map;
+					this.orient = parsed.orient;
+					this.rooms = []; 
+					for (var i = 0; i < parsed.rooms.length; i++) {
+						var room = parsed.rooms[i];
+						var newRoom = new Room(parseInt(room.x1, 10), parseInt(room.y1, 10), parseInt(room.w, 10), parseInt(room.h, 10));
+						newRoom.index = parseInt(room.index, 10);
+						this.rooms.push(newRoom);
+					}
+					this.MAP_WIDTH = parsed.MAP_WIDTH;
+					this.MAP_HEIGHT = parsed.MAP_HEIGHT;
+					this.TILE_WIDTH = parsed.TILE_WIDTH;
+					this.TILE_HEIGHT = parsed.TILE_HEIGHT;
+					this.maxRooms = parsed.maxRooms;
+					this.minRoomSize = parsed.minRoomSize;
+					this.maxRoomSize = parsed.maxRoomSize;
+				},
+				
+				getWallDirections: function(cellX, cellY) {
+					var result = 0;
+					var northTile = Math.max(0, cellY - 1);
+					var southTile = Math.min(this.MAP_HEIGHT, cellY + 1);
+					var eastTile = Math.min(this.MAP_WIDTH, cellX + 1);
+					var westTile = Math.max(0, cellX - 1);
+					
+					if (this.map[cellX][northTile] == this.TILE_NONE || this.map[cellX][northTile] == this.TILE_ROOM) {
+						result |= Dungeon.WALL_NORTH;
+					}
+					if (this.map[cellX][southTile] == this.TILE_NONE || this.map[cellX][southTile] == this.TILE_ROOM) {
+						result |= Dungeon.WALL_SOUTH;
+					}
+					if (this.map[eastTile][cellY] == this.TILE_NONE || this.map[eastTile][cellY] == this.TILE_ROOM) {
+						result |= Dungeon.WALL_EAST;
+					}
+					if (this.map[westTile][cellY] == this.TILE_NONE || this.map[westTile][cellY] == this.TILE_ROOM) {
+						result |= Dungeon.WALL_WEST;
+					}
+					
+					return result;
+				}
+			};
+
+			var Renderer = {
+				canvas: null,
+				ctx: null,
+				DrawLine: function(startX, startY, endX, endY) {
+					this.ctx.beginPath();
+					this.ctx.moveTo(startX, startY);
+					this.ctx.lineTo(endX, endY);
+					this.ctx.stroke();
+				},
+				Initialize: function () {
+					this.canvas = document.getElementById('canvas');
+					this.canvas.width = Dungeon.MAP_WIDTH * Dungeon.TILE_WIDTH;
+					this.canvas.height = Dungeon.MAP_HEIGHT * Dungeon.TILE_HEIGHT;
+					this.ctx = canvas.getContext('2d');
+					this.ctx.font = "20px Arial";
+					this.ctx.textAlign = "center";
+					
+					this.canvas.addEventListener("click", function(evt) {
+						var coords = Renderer.canvas.relMouseCoords(evt);
+					
+						coords.x = Math.ceil(coords.x / Dungeon.TILE_WIDTH) -1;
+						coords.y = Math.ceil(coords.y / Dungeon.TILE_HEIGHT) -1;
+						console.log("Clicked on", [coords.x, coords.y], Helpers.TileTypeToString(Dungeon.map[coords.x][coords.y]))
+					
+					}, false);
+				},
+				DrawIntersectionPoint: function(c1, c2) {
+					var p = Dungeon.corridors[c1].intersectionPoint(Dungeon.corridors[c2]);
+					if (p) {
+						this.ctx.fillStyle = '#f0f';
+						this.ctx.fillRect(p.ax * Dungeon.TILE_WIDTH, p.ay * Dungeon.TILE_HEIGHT, Dungeon.TILE_WIDTH, Dungeon.TILE_HEIGHT);
+					}				
+				},
+				DrawCorridor: function(c) {
+					var corridor = Dungeon.corridors[c];
+					this.ctx.fillStyle = '#f0f';
+					for (var i = 0; i < corridor.cells.length; i++) {
+						this.ctx.fillRect(corridor.cells[i].cellX * Dungeon.TILE_WIDTH, corridor.cells[i].cellY * Dungeon.TILE_HEIGHT, Dungeon.TILE_WIDTH, Dungeon.TILE_HEIGHT);
+					}
+				},
+				Update: function () {
+					for (var y = 0; y < Dungeon.MAP_HEIGHT; y++) {
+						for (var x = 0; x < Dungeon.MAP_WIDTH; x++) {
+							var tile = Dungeon.map[x][y];
+							if (tile == Dungeon.TILE_ROOM) 
+								this.ctx.fillStyle = '#888';
+							else if (tile == Dungeon.TILE_NONE) 
+								this.ctx.fillStyle = '#000';
+							else if (tile == Dungeon.TILE_CORRIDOR) 
+								this.ctx.fillStyle = '#CCC';
+							else if (tile == Dungeon.TILE_DOOR)
+								this.ctx.fillStyle = '#f00';
+							else if (tile == Dungeon.TILE_START)
+								this.ctx.fillStyle = '#0f0';
+							else if (tile == Dungeon.TILE_END) {
+								this.ctx.fillStyle = '#00f';
+							}
+							this.ctx.fillRect(x * Dungeon.TILE_WIDTH, y * Dungeon.TILE_HEIGHT, Dungeon.TILE_WIDTH, Dungeon.TILE_HEIGHT);
+							
+							//	Draw walls.
+							if (tile == Dungeon.TILE_CORRIDOR) {
+								var directions = Dungeon.getWallDirections(x, y);
+								
+								this.ctx.strokeStyle = '#00FFEF';
+								this.ctx.lineWidth = 5;
+								if ((directions & Dungeon.WALL_NORTH) == Dungeon.WALL_NORTH)
+									this.DrawLine(x * Dungeon.TILE_WIDTH, y * Dungeon.TILE_HEIGHT, (x * Dungeon.TILE_WIDTH) + Dungeon.TILE_WIDTH, y * Dungeon.TILE_HEIGHT); // north
+								if ((directions & Dungeon.WALL_WEST) == Dungeon.WALL_WEST)
+									this.DrawLine(x * Dungeon.TILE_WIDTH, y * Dungeon.TILE_HEIGHT, x * Dungeon.TILE_WIDTH, (y * Dungeon.TILE_HEIGHT) + Dungeon.TILE_HEIGHT); // west
+								if ((directions & Dungeon.WALL_SOUTH) == Dungeon.WALL_SOUTH)
+									this.DrawLine(x * Dungeon.TILE_WIDTH, (y * Dungeon.TILE_HEIGHT) + Dungeon.TILE_HEIGHT, (x * Dungeon.TILE_WIDTH) + Dungeon.TILE_WIDTH, 
+										(y * Dungeon.TILE_HEIGHT) + Dungeon.TILE_HEIGHT); // south
+								if ((directions & Dungeon.WALL_EAST) == Dungeon.WALL_EAST)
+									this.DrawLine((x * Dungeon.TILE_WIDTH) + Dungeon.TILE_WIDTH, y * Dungeon.TILE_HEIGHT, (x * Dungeon.TILE_WIDTH) + Dungeon.TILE_WIDTH, 
+										(y * Dungeon.TILE_HEIGHT) + Dungeon.TILE_HEIGHT); // east
+							}
+						}
+					}
+					
+					this.ctx.strokeStyle = '#fff';
+					this.ctx.lineWidth = 1;
+					for (var x = 0; x < Dungeon.MAP_WIDTH * Dungeon.TILE_WIDTH; x += Dungeon.TILE_WIDTH) {
+						this.ctx.beginPath();
+						this.ctx.moveTo(x, 0);
+						this.ctx.lineTo(x, Dungeon.MAP_HEIGHT * Dungeon.TILE_HEIGHT);
+						this.ctx.stroke();
+					}
+					
+					for (var x = 0; x < Dungeon.MAP_HEIGHT * Dungeon.TILE_HEIGHT; x += Dungeon.TILE_HEIGHT) {
+						this.ctx.beginPath();
+						this.ctx.moveTo(0, x);
+						this.ctx.lineTo(Dungeon.MAP_WIDTH * Dungeon.TILE_WIDTH, x);
+						this.ctx.stroke();
+					}
+					
+					this.ctx.fillStyle = '#900';
+					for (var i = 0; i < Dungeon.rooms.length; i++) {
+						var room = Dungeon.rooms[i];
+						this.ctx.fillText(room.index, room.center.x * Dungeon.TILE_WIDTH, room.center.y * Dungeon.TILE_HEIGHT);
+					}
+				}
+			};
+
+			var Helpers = {
+				GetRandom: function (low, high) {
+					return~~ (Math.random() * (high - low)) + low;
+				},
+				TileTypeToString: function(tile) {
+					switch (tile) {
+						case Dungeon.TILE_NONE:
+							return 'NONE';
+						case Dungeon.TILE_DOOR:
+							return 'DOOR';
+						case Dungeon.TILE_CORRIDOR:
+							return 'CORRIDOR';
+						case Dungeon.TILE_ROOM:
+							return 'ROOM';
+						case Dungeon.TILE_START:
+							return 'START';
+						case Dungeon.TILE_END:
+							return 'END';
+					}
+				},
+				OrientToString: function(orient) {
+					switch (orient) {
+						case Dungeon.ORIENTATION_NONE:
+							return 'NONE';
+						case Dungeon.ORIENTATION_HORIZONTAL:
+							return 'HORIZONTAL';
+						case Dungeon.ORIENTATION_VERTICAL:
+							return 'VERTICAL';
+					}
+				},
+				DirToString: function(dir) {
+					switch (dir) {
+						case Dungeon.NORTH:
+							return 'NORTH';
+						case Dungeon.SOUTH:
+							return 'SOUTH';
+						case Dungeon.EAST:
+							return 'EAST';
+						case Dungeon.WEST:
+							return 'WEST';
+					}
+				}
+			};
+			
+			function relMouseCoords(event) {
+				var totalOffsetX = 0;
+				var totalOffsetY = 0;
+				var canvasX = 0;
+				var canvasY = 0;
+				var currentElement = this;
+
+				do{
+					totalOffsetX += currentElement.offsetLeft - currentElement.scrollLeft;
+					totalOffsetY += currentElement.offsetTop - currentElement.scrollTop;
+				}
+				while(currentElement = currentElement.offsetParent)
+
+				canvasX = event.pageX - totalOffsetX;
+				canvasY = event.pageY - totalOffsetY;
+
+				return {x:canvasX, y:canvasY}
+			}
+			HTMLCanvasElement.prototype.relMouseCoords = relMouseCoords;
+			
+			Dungeon.makeMap();
+			Renderer.Initialize();
+			Renderer.Update();
+		</script>
+	</body>
+</html>
